@@ -7,63 +7,39 @@ async function main() {
   const WRAPPED_NATIVE = process.env.WRAPPED_NATIVE_ADDRESS;
   if (!WRAPPED_NATIVE) throw new Error("WRAPPED_NATIVE_ADDRESS not set in .env");
 
+  const FEE_SIGNER = process.env.FEE_SIGNER_ADDRESS || deployer.address;
+  const VAULT = process.env.VAULT_ADDRESS || deployer.address;
   const executor = deployer.address;
 
-  // Deploy OneSwapAllowed
-  const OneSwapAllowed = await ethers.getContractFactory("OneSwapAllowed");
-  const allowed = await OneSwapAllowed.deploy(executor);
-  await allowed.waitForDeployment();
-  console.log("OneSwapAllowed:", await allowed.getAddress());
+  // Deploy OneSwapAggregateBridge
+  const OneSwapAggregateBridge = await ethers.getContractFactory("OneSwapAggregateBridge");
+  const bridge = await OneSwapAggregateBridge.deploy(executor);
+  await bridge.waitForDeployment();
+  const bridgeAddress = await bridge.getAddress();
+  console.log("OneSwapAggregateBridge:", bridgeAddress);
 
-  // Deploy OneSwapFees
-  const OneSwapFees = await ethers.getContractFactory("OneSwapFees");
-  const fees = await OneSwapFees.deploy(executor);
-  await fees.waitForDeployment();
-  console.log("OneSwapFees:", await fees.getAddress());
-
-  // Deploy OneSwap (core swap executor)
-  const OneSwap = await ethers.getContractFactory("OneSwap");
-  const swap = await OneSwap.deploy(executor);
-  await swap.waitForDeployment();
-  const swapAddress = await swap.getAddress();
-  console.log("OneSwap:", swapAddress);
-
-  // Deploy OneSwapCross
-  const OneSwapCross = await ethers.getContractFactory("OneSwapCross");
-  const cross = await OneSwapCross.deploy(WRAPPED_NATIVE, executor);
-  await cross.waitForDeployment();
-  const crossAddress = await cross.getAddress();
-  console.log("OneSwapCross:", crossAddress);
-
-  // Deploy OneSwapRouter (main entry point)
+  // Deploy OneSwapRouter (main entry point — inherits V2, V3, Aggregate, Cross)
   const OneSwapRouter = await ethers.getContractFactory("OneSwapRouter");
-  const router = await OneSwapRouter.deploy(
-    swapAddress,
-    crossAddress,
-    await fees.getAddress(),
-    executor
-  );
+  const router = await OneSwapRouter.deploy();
   await router.waitForDeployment();
   const routerAddress = await router.getAddress();
   console.log("OneSwapRouter:", routerAddress);
 
-  // Wire up: point OneSwap and OneSwapCross at the router
-  await swap.changeOneSwapRouter(routerAddress);
-  await swap.changeOneSwapAllowed(await allowed.getAddress());
-  await cross.changeOneSwapRouter(routerAddress);
-  await cross.changeOneSwapAllowed(await allowed.getAddress());
-  console.log("Wiring complete");
+  // Wire bridge → router
+  await bridge.changeOneSwapRouter(routerAddress);
+  console.log("Bridge wired to router");
 
-  // Whitelist wrapped native token in router
-  await router.changeWrappedAllowed([WRAPPED_NATIVE]);
+  // Wire router → bridge, fee signer, vault
+  await router.changeOneSwapProxy(bridgeAddress, FEE_SIGNER, VAULT);
+  console.log("Router proxy configured");
+
+  // Whitelist wrapped native token
+  await router.changeAllowed([], [WRAPPED_NATIVE]);
   console.log("Wrapped native whitelisted:", WRAPPED_NATIVE);
 
   console.log("\nDeployment summary:");
-  console.log("  OneSwapAllowed:  ", await allowed.getAddress());
-  console.log("  OneSwapFees:     ", await fees.getAddress());
-  console.log("  OneSwap:         ", swapAddress);
-  console.log("  OneSwapCross:    ", crossAddress);
-  console.log("  OneSwapRouter:   ", routerAddress);
+  console.log("  OneSwapAggregateBridge:", bridgeAddress);
+  console.log("  OneSwapRouter:         ", routerAddress);
 }
 
 main().catch((err) => {

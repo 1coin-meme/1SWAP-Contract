@@ -3,22 +3,28 @@ pragma solidity >=0.6.0;
 
 library RevertReasonParser {
     function parse(bytes memory data, string memory prefix) internal pure returns (string memory) {
+        // 68 = 4-byte selector 0x08c379a0 + 32 bytes offset + 32 bytes length
         if (data.length >= 68 && data[0] == "\x08" && data[1] == "\xc3" && data[2] == "\x79" && data[3] == "\xa0") {
             string memory reason;
             // solhint-disable no-inline-assembly
             assembly {
+                // 68 = 32 bytes data length + 4-byte selector + 32 bytes offset
                 reason := add(data, 68)
             }
             require(data.length >= 68 + bytes(reason).length, "Invalid revert reason");
             return string(abi.encodePacked(prefix, "Error(", reason, ")"));
-        } else if (data.length == 36 && data[0] == "\x4e" && data[1] == "\x48" && data[2] == "\x7b" && data[3] == "\x71") {
+        }
+        // 36 = 4-byte selector 0x4e487b71 + 32 bytes integer
+        else if (data.length == 36 && data[0] == "\x4e" && data[1] == "\x48" && data[2] == "\x7b" && data[3] == "\x71") {
             uint256 code;
             // solhint-disable no-inline-assembly
             assembly {
+                // 36 = 32 bytes data length + 4-byte selector
                 code := mload(add(data, 36))
             }
             return string(abi.encodePacked(prefix, "Panic(", _toHex(code), ")"));
         }
+
         return string(abi.encodePacked(prefix, "Unknown(", _toHex(data), ")"));
     }
 
