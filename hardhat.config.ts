@@ -6,6 +6,7 @@ dotenv.config();
 
 const PRIVATE_KEY = process.env.PRIVATE_KEY || "0x0000000000000000000000000000000000000000000000000000000000000001";
 const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY || "";
+const BSC_RPC_URL = process.env.BSC_RPC_URL || "";
 
 const config: HardhatUserConfig = {
   solidity: {

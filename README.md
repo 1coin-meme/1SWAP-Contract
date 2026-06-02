@@ -94,6 +94,104 @@ The deploy script handles this automatically:
 4. Wire router → bridge, fee signer, vault via `router.changeOneSwapProxy(...)`
 5. Whitelist the wrapped native token via `router.changeAllowed([], [WRAPPED_NATIVE])`
 
+## FourMeme Integration
+
+`FourMemeRouter` is a standalone router for buying and selling tokens on the [FourMeme](https://four.meme) bonding-curve launchpad on BSC (`0x5c952063c7fc8610FFDB798152D69F0B9550762b`).
+
+### Why a dedicated router?
+
+FourMeme bonding-curve tokens block peer-to-peer `transfer` calls — only the FourMeme contract itself can move them. A naive proxy-based approach (proxy buys, then forwards tokens to the user) fails at the forwarding step. The router works around this by using FourMeme's own function signatures that handle delivery directly.
+
+### Buy
+
+```
+User ──[BNB]──► FourMemeRouter.buy(token, minTokenOut)
+                      │
+                      └─ FourMeme.buyTokenAMAP(token, to=msg.sender, funds, minAmount)
+                                    │
+                                    ├─ tokens ──► user wallet  (FourMeme transfers, no restriction)
+                                    └─ BNB refund ──► router ──► user wallet
+```
+
+- Selector: `buyTokenAMAP` (`0x7f79f6df`)
+- FourMeme delivers tokens to the `to` address it receives — bypassing the peer-to-peer restriction entirely
+- Any unused BNB (partial fill on the bonding curve) is refunded to the caller
+
+### Sell
+
+```
+Step 1 — User approves FourMeme to spend their tokens:
+  token.approve(FOURMEME_ADDRESS, amount)   ← NOT the router
+
+Step 2 — User calls router:
+  FourMemeRouter.sell(token, amount, minBNBOut)
+        │
+        └─ FourMeme.sellToken(origin=0, token, from=tx.origin, amount, minFunds, feeRate=0, feeRecipient=0x0)
+                        │
+                        ├─ pulls tokens from tx.origin (user)
+                        └─ BNB ──► router ──► user wallet
+```
+
+- Selector: `sellToken` (`0xe63aaf36`)
+- FourMeme validates `from == tx.origin`. Because the user is the transaction originator regardless of `msg.sender`, the router can call FourMeme on the user's behalf
+- The user approves **FourMeme** (`0x5c952063c7fc8610FFDB798152D69F0B9550762b`), not the router — FourMeme is the one that does `transferFrom`. This approval only needs to be done once per token (or set to `type(uint256).max` for a blanket approval)
+- FourMeme sends BNB **directly to `tx.origin`** (the caller EOA) — the router is never the BNB intermediary
+
+### buyWithToken
+
+Swap any ERC-20 → FourMeme token in one transaction. The router handles the intermediate BNB conversion via PancakeSwap.
+
+```
+User approves: Router to spend inputToken
+
+FourMemeRouter.buyWithToken(inputToken, inputAmount, path, minBNBFromSwap, fourMemeToken, minTokenOut)
+      │
+      ├─ PancakeSwap: inputToken ──► WBNB  (minBNBFromSwap guards this step)
+      ├─ WBNB.withdraw() → native BNB
+      └─ FourMeme.buyTokenAMAP(fourMemeToken, to=msg.sender, ...)
+                        │
+                        └─ tokens ──► user wallet
+```
+
+- `path` must end with WBNB
+- Two slippage params: `minBNBFromSwap` (V2 step) and `minTokenOut` (FourMeme step)
+- Caller approves **this router** for `inputToken`
+
+### sellForToken
+
+Sell FourMeme tokens and receive any ERC-20 output — atomic, one transaction — using a BNB float pattern.
+
+FourMeme always sends BNB proceeds to `tx.origin` (the caller), not to `msg.sender` (the router). To make an atomic sell-and-swap possible, the caller provides the expected BNB as `msg.value`. The router uses that BNB for the swap immediately, then calls FourMeme sell which reimburses the float directly to the caller.
+
+```
+User approves: FourMeme to spend their FourMeme token
+
+FourMemeRouter.sellForToken(fourMemeToken, amount, minBNBFromSell, path, minTokenOut)
+  called with msg.value = expected BNB from the sell
+      │
+      ├─ wrap msg.value → WBNB
+      ├─ PancakeSwap: WBNB ──► outputToken ──► user wallet  (upfront, using the float)
+      └─ FourMeme.sellToken(from=tx.origin, ...)
+                        │
+                        ├─ pulls tokens from tx.origin (user)
+                        └─ BNB ──► tx.origin (user)  ← reimburses the float
+```
+
+- `path` must start with WBNB
+- `msg.value` = BNB the caller expects to receive from the FourMeme sell
+- Setting `minBNBFromSell >= msg.value` guarantees the caller does not lose BNB (tx reverts if FourMeme returns less than the float)
+- The bonding-curve buy/sell spread means the reimbursed BNB may be slightly less than `msg.value`; callers can accept this or tighten `minBNBFromSell` to enforce break-even
+- Caller approves **FourMeme** for the FourMeme token (same as `sell`)
+
+### Simulation results (BSC mainnet fork)
+
+| Function | Input | Output |
+|---|---|---|
+| `buy` | 0.001 BNB | 169,632 tokens in caller wallet |
+| `sell` | 169,632 tokens | 0.00196 BNB to caller |
+| `buyWithToken` | 5 USDT | 145,842,986 tokens in caller wallet |
+| `sellForToken` | 169,632 tokens + 0.001 BNB float | 0.683 USDT in caller wallet |
+
 ## License
 
 MIT
