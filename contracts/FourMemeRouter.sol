@@ -4,6 +4,7 @@ pragma solidity ^0.8.0;
 import "./libs/TransferHelper.sol";
 import "./libs/RevertReasonParser.sol";
 import "./interfaces/IUniswapV2Router.sol";
+import "./interfaces/IERC20.sol";
 
 // Router for buying and selling tokens on FourMeme.
 //
@@ -88,7 +89,7 @@ contract FourMemeRouter {
         address wbnb = path[0];
         TransferHelper.safeDeposit(wbnb, msg.value);
         TransferHelper.safeApprove(wbnb, uniswapV2Router, msg.value);
-        IUniswapV2Router(uniswapV2Router).swapExactTokensForTokens(
+        IUniswapV2Router(uniswapV2Router).swapExactTokensForTokensSupportingFeeOnTransferTokens(
             msg.value, minTokenOut, path, msg.sender, block.timestamp
         );
         TransferHelper.safeApprove(wbnb, uniswapV2Router, 0);
@@ -119,16 +120,18 @@ contract FourMemeRouter {
         // Pull inputToken from caller
         TransferHelper.safeTransferFrom(inputToken, msg.sender, address(this), inputAmount);
 
-        // Swap inputToken → WBNB
+        // Swap inputToken → WBNB (FOT-safe: checks actual balance delta, not pre-calculated amounts)
+        address wbnb = path[path.length - 1];
+        uint256 wbnbBefore = IERC20(wbnb).balanceOf(address(this));
         TransferHelper.safeApprove(inputToken, uniswapV2Router, inputAmount);
-        uint256[] memory amounts = IUniswapV2Router(uniswapV2Router).swapExactTokensForTokens(
+        IUniswapV2Router(uniswapV2Router).swapExactTokensForTokensSupportingFeeOnTransferTokens(
             inputAmount, minBNBFromSwap, path, address(this), block.timestamp
         );
         TransferHelper.safeApprove(inputToken, uniswapV2Router, 0);
 
         // Unwrap WBNB → native BNB
-        uint256 wbnbReceived = amounts[amounts.length - 1];
-        TransferHelper.safeWithdraw(path[path.length - 1], wbnbReceived);
+        uint256 wbnbReceived = IERC20(wbnb).balanceOf(address(this)) - wbnbBefore;
+        TransferHelper.safeWithdraw(wbnb, wbnbReceived);
 
         // Buy FourMeme token — tokens go directly to caller's wallet via to=msg.sender
         uint256 bnbBalBefore = address(this).balance - wbnbReceived;
